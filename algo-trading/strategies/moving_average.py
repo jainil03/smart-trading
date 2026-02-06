@@ -12,9 +12,16 @@ class MovingAverageStrategy(BaseStrategy):
 
         data["ma_fast"] = data["Close"].rolling(self.fast).mean()
         data["ma_slow"] = data["Close"].rolling(self.slow).mean()
-
+        
         data["signal"] = 0
-        data.loc[data["ma_fast"] > data["ma_slow"], "signal"] = 1
-        data.loc[data["ma_fast"] < data["ma_slow"], "signal"] = -1
+
+        # only generate signal when price actullay crosses moving averages
+        buy_cross = (data["ma_fast"] > data["ma_slow"]) & (data["ma_fast"].shift(1) <= data["ma_slow"].shift(1))
+        sell_cross = (data["ma_fast"] < data["ma_slow"]) & (data["ma_fast"].shift(1) >= data["ma_slow"].shift(1))
+        
+        data.loc[buy_cross, "signal"] = 1
+        data.loc[sell_cross, "signal"] = -1
+
+        print(data.loc[data["ma_slow"].notna(), ["Close", "ma_fast", "ma_slow", "signal"]].tail(20))
 
         return data

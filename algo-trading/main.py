@@ -1,6 +1,5 @@
 import yaml
 import yfinance as yf
-import matplotlib.pyplot as plt
 import mplfinance as mpf
 import pandas as pd
 
@@ -9,7 +8,7 @@ from backtester.execution import ExecutionEngine
 from backtester.portfolio import Portfolio
 from backtester.engine import BacktestEngine
 from analytics.metrics import sharpe_ratio, max_drawdown
-from analytics.plots import plot_equity_curve
+from analytics.plots import plot
 
 
 with open("./algo-trading/config/params.yaml") as f:
@@ -56,4 +55,4 @@ print(f"Sharpe Ratio: {sr:.2f}")
 print(f"Max Drawdown: {dd:.2%}")
 
 # Plot
-plot_equity_curve(data, results)
+plot(data, results,True,False)
