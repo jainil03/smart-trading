@@ -22,6 +22,6 @@ class MovingAverageStrategy(BaseStrategy):
         data.loc[buy_cross, "signal"] = 1
         data.loc[sell_cross, "signal"] = -1
 
-        print(data.loc[data["ma_slow"].notna(), ["Close", "ma_fast", "ma_slow", "signal"]].tail(20))
+        # print(data.loc[data["ma_slow"].notna(), ["Close", "ma_fast", "ma_slow", "signal"]].tail(20))
 
         return data

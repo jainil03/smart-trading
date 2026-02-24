@@ -1,75 +1,92 @@
-import matplotlib.pyplot as plt
-import mplfinance as mpf
-import numpy as np
-import pandas as pd
+import plotly.graph_objects as go
 
 
+def plot(data,symbol,interval):
 
-def plot(data, results, show_price=True, show_equity=True):
-    if show_price:
-        plot_price_with_signals(data)
-    if show_equity:
-        plot_equity_curve(results)
+    fig = go.Figure()
 
+    # Candlestick
+    fig.add_trace(go.Candlestick(
 
-def plot_price_with_signals(data, title="Price with Buy/Sell Signals"):
-    # --- Clean data ---
-    if isinstance(data.columns, pd.MultiIndex):
-        data = data.copy()
-        data.columns = data.columns.droplevel(1)
+        x=data.index,
 
-    ohlc_cols = ["Open", "High", "Low", "Close", "Volume"]
-    data = data.dropna(subset=ohlc_cols)
-    data[ohlc_cols] = data[ohlc_cols].astype(float)
-    data.index = pd.to_datetime(data.index).tz_localize(None)
+        open=data["Open"],
+        high=data["High"],
+        low=data["Low"],
+        close=data["Close"],
 
-    # --- Moving averages ---
-    apds = [
-        mpf.make_addplot(data["ma_fast"], color="black", width=1),
-        mpf.make_addplot(data["ma_slow"], color="blue", width=1),
-    ]
+        increasing=dict(
+            line=dict(color="#2962FF", width=1),
+            fillcolor="#2962FF"
+        ),
 
-    # --- BUY signals ---
-    buy_prices = np.where(data["signal"] == 1, data["Low"] * 0.998, np.nan)
-    apds.append(
-        mpf.make_addplot(
-            buy_prices,
-            type="scatter",
-            marker="$B$",
-            markersize=40,
-            color="green"
+        decreasing=dict(
+            line=dict(color="#000000", width=1),
+            fillcolor="#000000"
+        ),
+
+        name="Price"
+    ))
+
+    fig.update_layout(
+
+        height=900,
+        margin=dict(
+            l=0,
+            r=0,
+            t=30,
+            b=0
+        ),
+
+        plot_bgcolor="#e6e6e6",
+        paper_bgcolor="#e6e6e6",
+        dragmode="pan",
+        hovermode="x",
+
+        font=dict(
+            family="Arial",
+            size=12,
+            color="#333333"
+        ),
+
+        xaxis=dict(
+
+            rangeslider=dict(visible=False),
+            showgrid=True,
+            gridcolor="#c8c8c8",
+            zeroline=False
+
+        ),
+
+        yaxis=dict(
+
+            side="right",
+            showgrid=True,
+            gridcolor="#c8c8c8",
+            fixedrange=False,
+            zeroline=False
+        ),
+
+        title=dict(
+            text=f"{symbol} {interval.upper()}",
+            x=0.01,
+            y=0.98,
+            xanchor="left",
+            yanchor="top"
         )
     )
 
-    # --- SELL signals ---
-    sell_prices = np.where(data["signal"] == -1, data["High"] * 1.002, np.nan)
-    apds.append(
-        mpf.make_addplot(
-            sell_prices,
-            type="scatter",
-            marker="$S$",
-            markersize=40,
-            color="red"
-        )
+    fig.show(
+
+        config={
+
+            "scrollZoom": True,
+
+            "displaylogo": False,
+
+            # "modeBarButtonsToAdd": [
+            #     "drawline",
+            #     "drawrect"
+            # ],
+        }
     )
-
-    mpf.plot(
-        data,
-        type="candle",
-        addplot=apds,
-        volume=False,
-        style="yahoo",
-        show_nontrading=False,
-        figsize=(14, 7),
-        title=title
-    )
-
-
-def plot_equity_curve(results):
-    plt.figure(figsize=(14, 4))
-    plt.plot(results.index, results["equity"], color="green", linewidth=2)
-    plt.title("Portfolio Equity Curve")
-    plt.ylabel("Capital")
-    plt.xlabel("Date")
-    plt.grid(True)
-    plt.show()

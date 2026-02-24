@@ -55,4 +55,5 @@ print(f"Sharpe Ratio: {sr:.2f}")
 print(f"Max Drawdown: {dd:.2%}")
 
 # Plot
-plot(data, results,True,False)
+plot(data, config["symbol"], config["interval"])
+# plot(data, results,True,True)
