@@ -1,5 +1,5 @@
 import pandas as pd
-from strategies.base_strategy import BaseStrategy
+from algotrading.src.strategies.base_strategy import BaseStrategy
 
 class MovingAverageStrategy(BaseStrategy):
 

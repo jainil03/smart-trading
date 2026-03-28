@@ -14,6 +14,9 @@ class BacktestEngine:
         data["returns"] = data["Close"].pct_change().fillna(0)
 
         # Position logic
+        if "signal" not in data.columns:
+            raise KeyError("Data must contain a 'signal' column")
+
         data["position"] = (
             data["signal"]
             .replace(0, pd.NA)
