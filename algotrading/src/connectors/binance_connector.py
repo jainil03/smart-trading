@@ -2,7 +2,7 @@ import json
 import asyncio
 import websockets
 import ccxt.async_support as ccxt
-from algotrading.src.connectors.base_connector import BaseConnector
+from src.connectors.base_connector import BaseConnector
 
 class BinanceConnector(BaseConnector):
 
@@ -54,13 +54,19 @@ class BinanceConnector(BaseConnector):
         ]
 
     async def connect(self, callback):
-        print(f"Connecting to Binance stream for {self.symbol}...")
-        async with websockets.connect(self.ws_url) as ws:
-            while True:
-                try:
-                    data = await ws.recv()
-                    ticker_data = json.loads(data)
-                    await callback(ticker_data)
-                except Exception as e:
-                    print(f"Error in Binance stream: {e}")
-                    break
+        while True:
+            try:
+                async with websockets.connect(self.ws_url) as ws:
+                    while True:
+                        try:
+                            data = await ws.recv()
+                            ticker_data = json.loads(data)
+                            await callback(ticker_data)
+                        except websockets.exceptions.ConnectionClosedOK:
+                            return  # Exit on close
+                        except asyncio.CancelledError:
+                            return  # Exit on cancel
+                        except Exception:
+                            return  # Exit on error
+            except Exception:
+                return  # Don't reconnect on error, just exit

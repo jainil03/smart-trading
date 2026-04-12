@@ -52,7 +52,7 @@
             layout: { background: { type: 'solid', color: '#131722' }, textColor: '#d9d9d9' },
             grid: { vertLines: { color: '#363c4e' }, horzLines: { color: '#363c4e' } },
             crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-            timeScale: { rightOffset: 100, visible: true, timeVisible: true, secondsVisible: false },
+            timeScale: { rightOffset: 0, visible: true, timeVisible: true, secondsVisible: false, borderVisible: false },
         });
         let candleSeries = chart.addCandlestickSeries({
             upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350'
@@ -64,6 +64,7 @@
         // --- State ---
         let socket = null;
         let timeframeSeconds = 60;
+        let timeframe = "5m"; // Default timeframe
         let rawHistory = [];
         let isHistoryLoaded = false;
         let tickBuffer = [];
@@ -135,14 +136,23 @@
             }
         }
 
-        function setTF(tf) {
+        function setTF(tf, fromConnect = false) {
             timeframeSeconds = tf;
+            timeframe = tf.toString();
             signalMarkers = [];
             applyMarkers();
-            const aggregatedData = aggregateCandles(rawHistory, tf);
-            candleSeries.setData(aggregatedData);
-            extendTimeAxis();
+            
+            if (rawHistory.length > 0) {
+                const aggregatedData = aggregateCandles(rawHistory, tf);
+                candleSeries.setData(aggregatedData);
+                extendTimeAxis();
+            }
             if (currentStrategy) runBacktest();
+            
+            // Only reconnect if user initiated the timeframe change (not from connect)
+            if (!fromConnect) {
+                connect(currentSymbol);
+            }
         }
 
         // --- Live Stats ---
@@ -274,10 +284,10 @@
             phantomSeries = chart.addLineSeries({
                 color: 'transparent', lineWidth: 1, visible: true, priceLineVisible: false, lastValueVisible: false,
             });
-            socket = new WebSocket(`ws://localhost:8001/ws/market-data/${currentSymbol}`);
+            socket = new WebSocket(`ws://localhost:8001/ws/market-data/${currentSymbol}/${timeframe}`);
             socket.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                if (data.type === 'history') { rawHistory = data.data; setTF(timeframeSeconds); isHistoryLoaded = true; currentCandle = rawHistory[rawHistory.length - 1]; tickBuffer.forEach(t => processTick(t)); tickBuffer = []; if (currentStrategy) runBacktest();
+                if (data.type === 'history') { rawHistory = data.data; currentCandle = rawHistory[rawHistory.length - 1]; setTF(timeframeSeconds, true); isHistoryLoaded = true; tickBuffer.forEach(t => processTick(t)); tickBuffer = []; if (currentStrategy) runBacktest();
                 } else if (data.type === 'tick') { if (!isHistoryLoaded) tickBuffer.push(data); else processTick(data); }
             };
         }
@@ -315,12 +325,14 @@
         async function runBacktest() {
             if (!currentStrategy || !isHistoryLoaded) return;
             const yfSymbol = currentSymbol.toUpperCase().replace('USDT', '-USD');
-            const tfMap = { 60: '1m', 300: '5m', 900: '15m', 3600: '1h', 14400: '1h', 86400: '1d' };
+            const tfMap = { 60: '1m', 300: '5m', 900: '15m', 3600: '1h', 14400: '4h', 86400: '1d' };
+            const periodMap = { 60: '5d', 300: '60d', 900: '60d', 3600: '2y', 14400: '2y', 86400: '2y' };
             const interval = tfMap[timeframeSeconds] || '5m';
+            const period = periodMap[timeframeSeconds] || '60d';
             try {
                 const res = await fetch('/api/backtest', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ strategy: currentStrategy, params: { fast_window: 9, slow_window: 15 }, symbol: yfSymbol, period: '1mo', interval, capital: 100000 })
+                    body: JSON.stringify({ strategy: currentStrategy, params: { fast_window: 9, slow_window: 15 }, symbol: yfSymbol, period, interval, capital: 100000 })
                 });
                 const result = await res.json();
                 if (result.error) return;

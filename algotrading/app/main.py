@@ -27,6 +27,35 @@ app = FastAPI()
 # Serve static files
 app.mount("/static", StaticFiles(directory="algotrading/app/static"), name="static")
 
+def get_period_and_interval(timeframe: str) -> tuple[str, str]:
+    """
+    Determine period and interval to get max candles (around 17k) for each timeframe.
+    Yahoo limits: 1m=7d max, intraday (<1d)=60d max, 1h+=2y
+    """
+    timeframe_to_seconds = {
+        "60": 60,      # 1m
+        "300": 300,    # 5m  
+        "900": 900,    # 15m
+        "3600": 3600,  # 1h
+        "14400": 14400, # 4h
+        "86400": 86400  # 1d
+    }
+    
+    tf_sec = timeframe_to_seconds.get(timeframe, 300)
+    
+    if tf_sec <= 60:
+        return ("7d", "1m")       # 1m: 7d max → ~7k candles
+    elif tf_sec <= 300:
+        return ("60d", "5m")     # 5m: 60d max → ~17k candles
+    elif tf_sec <= 900:
+        return ("60d", "15m")     # 15m: 60d max → ~5.7k candles
+    elif tf_sec <= 3600:
+        return ("2y", "1h")      # 1h: 2y → ~17k candles (max)
+    elif tf_sec <= 14400:
+        return ("2y", "4h")      # 4h: 2y → ~4k candles
+    else:
+        return ("2y", "1d")     # 1d: 2y → ~730 candles
+
 @app.get("/")
 async def get_index():
     path = os.path.join(os.path.dirname(__file__), "static/index.html")
@@ -128,8 +157,8 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-@app.websocket("/ws/market-data/{symbol}")
-async def websocket_endpoint(websocket: WebSocket, symbol: str):
+@app.websocket("/ws/market-data/{symbol}/{timeframe}")
+async def websocket_endpoint(websocket: WebSocket, symbol: str, timeframe: str = "5m"):
     await manager.connect(websocket)
     
     binance_symbol = symbol.upper()
@@ -137,15 +166,18 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
     # if symbol.lower() == 'btcusdt':
     #     yf_symbol = 'BTC-USD'
     
-    logger.info(f"New WebSocket connection for {symbol} (YF: {yf_symbol}, Binance: {binance_symbol})")
+    logger.info(f"New WebSocket connection for {symbol} (YF: {yf_symbol}, Binance: {binance_symbol}, Timeframe: {timeframe})")
     
     connector = BinanceConnector(binance_symbol.lower())
     
-    # 1. Fetch deep history with YFinance
+    # 1. Fetch deep history with YFinance based on timeframe
     last_timestamp = 0
     try:
-        # Fetching 1mo with 5m interval
-        data = yf.Ticker(yf_symbol).history(period="1mo", interval="5m")
+        # Determine period and interval based on timeframe to get maximum candles
+        period, interval = get_period_and_interval(timeframe)
+        
+        # Use ticker.history() for flat column structure
+        data = yf.Ticker(yf_symbol).history(period=period, interval=interval)
         
         if not data.empty:
             data = data.reset_index()
@@ -203,9 +235,16 @@ async def websocket_endpoint(websocket: WebSocket, symbol: str):
     try:
         while True:
             await websocket.receive_text()
+    except asyncio.exceptions.CancelledError:
+        logger.info(f"WebSocket connection closed by client")
     except Exception as e:
-        logger.error(f"WebSocket Error: {e}")
+        if "no close frame received" not in str(e).lower() and "1005" not in str(e):
+            logger.error(f"WebSocket Error: {e}")
     finally:
         logger.info(f"Closing stream")
         stream_task.cancel()
+        try:
+            await stream_task
+        except asyncio.CancelledError:
+            pass
         manager.disconnect(websocket)
