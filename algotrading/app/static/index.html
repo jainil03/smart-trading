@@ -3,22 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <title>Real-Time Trading</title>
-    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <script src="https://unpkg.com/lightweight-charts@3.8.0/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         body, html { margin: 0; padding: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
         #chart { width: 100vw; height: 100vh; position: relative; }
         #draw-layer { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 5; pointer-events: none; }
-        .controls { position: absolute; top: 20px; left: 20px; z-index: 10; background: rgba(30, 32, 40, 0.9); padding: 12px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); backdrop-filter: blur(5px); display: flex; gap: 8px; align-items: center; color: #fff; }
-        .controls button { background: #363c4e; color: #fff; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; transition: background 0.2s; }
-        .controls button:hover { opacity: 0.8; }
-        .controls input[type="text"] { background: #2a2e39; border-color: #444; color: #fff; padding: 6px; border-radius: 4px; border: 1px solid #ccc; }
-        .color-group { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+        .toolbar { position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; gap: 6px; flex-wrap: wrap; max-width: 90vw; }
+        .toolbar button, .toolbar select, .toolbar input { background: rgba(30,32,40,0.85); color: #d9d9d9; border: 1px solid #444; border-radius: 4px; padding: 5px 10px; cursor: pointer; font-size: 12px; }
+        .toolbar button:hover { background: #363c4e; }
+        .toolbar input[type="text"] { width: 80px; }
+        .toolbar input[type="color"] { width: 24px; height: 24px; padding: 0; border: 1px solid #444; }
+        .results { position: absolute; bottom: 10px; left: 10px; z-index: 10; background: rgba(30,32,40,0.92); padding: 10px 14px; border-radius: 6px; color: #fff; font-size: 11px; display: none; min-width: 220px; border: 1px solid #363c4e; }
+        .results .title { font-size: 12px; color: #00bcd4; margin-bottom: 6px; font-weight: bold; }
+        .results .row { display: flex; justify-content: space-between; padding: 2px 0; }
+        .results .row span:last-child { font-weight: bold; }
+        .pos { color: #26a69a; }
+        .neg { color: #ef5350; }
     </style>
 </head>
 <body class="dark">
-    <div class="controls">
-        <input type="text" id="symbolInput" placeholder="e.g., btcusdt">
-        <button onclick="switchSymbol()">Switch</button>
+    <div class="toolbar">
+        <input type="text" id="symbolInput" placeholder="btcusdt" value="btcusdt">
+        <button onclick="switchSymbol()">Go</button>
         <button onclick="setTF(60)">1m</button>
         <button onclick="setTF(300)">5m</button>
         <button onclick="setTF(900)">15m</button>
@@ -26,15 +32,17 @@
         <button onclick="setTF(14400)">4h</button>
         <button onclick="setTF(86400)">1d</button>
         <button onclick="toggleTheme()">Theme</button>
-        <div class="color-group"><label>Up:</label><input type="color" id="upColor" value="#26a69a" onchange="updateColors()"></div>
-        <div class="color-group"><label>Down:</label><input type="color" id="downColor" value="#ef5350" onchange="updateColors()"></div>
+        <input type="color" id="upColor" value="#26a69a" onchange="updateColors()" title="Up color">
+        <input type="color" id="downColor" value="#ef5350" onchange="updateColors()" title="Down color">
         <button onclick="drawingManager.setTool('trendline')">Trendline</button>
         <button onclick="drawingManager.setTool('rectangle')">Rectangle</button>
-        <button onclick="drawingManager.setTool('fibonacci')">Fibonacci</button>
+        <button onclick="drawingManager.setTool('fibonacci')">Fib</button>
         <button onclick="drawingManager.setTool('long')">Long</button>
         <button onclick="drawingManager.setTool('short')">Short</button>
-        <button onclick="drawingManager.clear()">Clear All</button>
+        <button onclick="drawingManager.clear()">Clear</button>
+        <select id="strategySelect" onchange="onStrategyChange()"><option value="">Strategy...</option></select>
     </div>
+    <div id="results" class="results"></div>
     <div id="chart"><svg id="draw-layer"></svg></div>
     <script>
         const chartContainer = document.getElementById('chart');
@@ -44,36 +52,33 @@
             layout: { background: { type: 'solid', color: '#131722' }, textColor: '#d9d9d9' },
             grid: { vertLines: { color: '#363c4e' }, horzLines: { color: '#363c4e' } },
             crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-            timeScale: { rightOffset: 100, visible: true, timeVisible: true, secondsVisible: false, lockVisibleTimeRangeOnResize: true },
+            timeScale: { rightOffset: 100, visible: true, timeVisible: true, secondsVisible: false },
         });
-        
-        let candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
+        let candleSeries = chart.addCandlestickSeries({
             upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350'
         });
-
-        // Invisible line series to extend time axis labels into the future
-        let phantomSeries = chart.addSeries(LightweightCharts.LineSeries, {
+        let phantomSeries = chart.addLineSeries({
             color: 'transparent', lineWidth: 1, visible: true, priceLineVisible: false, lastValueVisible: false,
         });
 
-        function extendTimeAxis() {
-            if (!currentCandle || rawHistory.length === 0) return;
-            const lastTime = rawHistory[rawHistory.length - 1].time;
-            const lastPrice = rawHistory[rawHistory.length - 1].close;
-            const phantomData = [];
-            for (let i = 1; i <= 150; i++) {
-                phantomData.push({ time: lastTime + (timeframeSeconds * i), value: lastPrice });
-            }
-            phantomSeries.setData(phantomData);
-        }
+        // --- State ---
+        let socket = null;
+        let timeframeSeconds = 60;
+        let rawHistory = [];
+        let isHistoryLoaded = false;
+        let tickBuffer = [];
+        let currentCandle = null;
+        let isDark = true;
+        let signalMarkers = [];
+        let currentSymbol = 'btcusdt';
+        let currentStrategy = '';
 
-        // Helper: convert pixel x to time, extrapolate if beyond last candle
+        // --- Helpers ---
         function pixelToTime(x) {
             let t = chart.timeScale().coordinateToTime(x);
-            if (t === null) {
-                // Extrapolate: get last candle time + offset
+            if (t === null && rawHistory.length > 0) {
                 const bars = chart.timeScale().getVisibleLogicalRange();
-                if (bars && rawHistory.length > 0) {
+                if (bars) {
                     const lastTime = rawHistory[rawHistory.length - 1].time;
                     const barWidth = chartContainer.clientWidth / Math.max(bars.to - bars.from, 1);
                     const barsBeyond = Math.max(0, x - chart.timeScale().timeToCoordinate(lastTime));
@@ -83,298 +88,25 @@
             return t;
         }
 
-        const drawLayer = document.getElementById('draw-layer');
-        class DrawingManager {
-            constructor() {
-                this.tool = null;
-                this.isDrawing = false;
-                this.currentElement = null;
-                this.drawnTools = [];
-                this.selectedTool = null;
-                this.isDraggingHandle = false;
-                this.dragHandlePoint = null;
-                
-                document.addEventListener('mousedown', (e) => this.onMouseDown(e));
-                document.addEventListener('mousemove', (e) => this.onMouseMove(e));
-                document.addEventListener('mouseup', (e) => this.onMouseUp(e));
-                document.addEventListener('keydown', (e) => this.onKeyDown(e));
-                chart.timeScale().subscribeVisibleLogicalRangeChange(() => this.renderAll());
-            }
-            
-            setTool(tool) { 
-                this.tool = tool; 
-                this.selectedTool = null; 
-                this.renderAll();
-            }
-            
-            clear() { this.drawnTools = []; this.selectedTool = null; this.renderAll(); }
-            
-            onKeyDown(e) {
-                if (e.target.tagName === 'INPUT') return; // Don't delete when typing in input
-                if (e.key === 'Delete' && this.selectedTool !== null) {
-                    const idx = this.drawnTools.indexOf(this.selectedTool);
-                    if (idx > -1) {
-                        this.drawnTools.splice(idx, 1);
-                        this.selectedTool = null;
-                        this.renderAll();
-                    }
-                }
-                if (e.key === 'Escape') {
-                    this.tool = null;
-                    this.selectedTool = null;
-                    this.renderAll();
-                }
-            }
-
-            renderAll() {
-                drawLayer.innerHTML = '';
-                this.drawnTools.forEach((tool) => this.renderTool(tool));
-                if (this.currentElement) this.renderTool(this.currentElement);
-            }
-
-            addHandle(x, y, tool, point) {
-                const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-                circle.setAttribute("cx", x);
-                circle.setAttribute("cy", y);
-                circle.setAttribute("r", "6");
-                circle.setAttribute("fill", "#00bcd4");
-                circle.setAttribute("stroke", "white");
-                circle.setAttribute("stroke-width", "1.5");
-                circle.style.cursor = "nwse-resize";
-                circle.style.pointerEvents = "auto";
-                circle.addEventListener('mousedown', (e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    this.isDraggingHandle = true;
-                    this.dragHandlePoint = point;
-                    this.selectedTool = tool;
-                });
-                drawLayer.appendChild(circle);
-            }
-
-            addDeleteButton(x, y, tool) {
-                const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
-                g.style.cursor = "pointer";
-                g.style.pointerEvents = "auto";
-                const bg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-                bg.setAttribute("cx", x); bg.setAttribute("cy", y);
-                bg.setAttribute("r", "8"); bg.setAttribute("fill", "#ef5350");
-                g.appendChild(bg);
-                const line1 = document.createElementNS("http://www.w3.org/2000/svg", "line");
-                line1.setAttribute("x1", x - 4); line1.setAttribute("y1", y - 4);
-                line1.setAttribute("x2", x + 4); line1.setAttribute("y2", y + 4);
-                line1.setAttribute("stroke", "white"); line1.setAttribute("stroke-width", "2");
-                g.appendChild(line1);
-                const line2 = document.createElementNS("http://www.w3.org/2000/svg", "line");
-                line2.setAttribute("x1", x + 4); line2.setAttribute("y1", y - 4);
-                line2.setAttribute("x2", x - 4); line2.setAttribute("y2", y + 4);
-                line2.setAttribute("stroke", "white"); line2.setAttribute("stroke-width", "2");
-                g.appendChild(line2);
-                g.addEventListener('mousedown', (e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    const idx = this.drawnTools.indexOf(tool);
-                    if (idx > -1) this.drawnTools.splice(idx, 1);
-                    this.selectedTool = null;
-                    this.renderAll();
-                });
-                drawLayer.appendChild(g);
-            }
-
-            addClickListener(el, tool) {
-                el.style.pointerEvents = "auto";
-                el.style.cursor = "pointer";
-                el.addEventListener('mousedown', (e) => {
-                    if (!this.tool && !this.isDraggingHandle) {
-                        e.stopPropagation();
-                        this.isClickingTool = true;
-                        this.selectedTool = tool;
-                        this.renderAll();
-                    }
-                });
-            }
-
-            renderTool(tool) {
-                const isSelected = tool === this.selectedTool;
-                
-                if (tool.type === 'trendline') {
-                    const x1 = chart.timeScale().timeToCoordinate(tool.p1.time);
-                    const y1 = candleSeries.priceToCoordinate(tool.p1.price);
-                    const x2 = chart.timeScale().timeToCoordinate(tool.p2.time);
-                    const y2 = candleSeries.priceToCoordinate(tool.p2.price);
-                    if (x1 === null || x2 === null || y1 === null || y2 === null) return;
-                    const el = document.createElementNS("http://www.w3.org/2000/svg", "line");
-                    el.setAttribute("x1", x1); el.setAttribute("y1", y1);
-                    el.setAttribute("x2", x2); el.setAttribute("y2", y2);
-                    el.setAttribute("stroke", isSelected ? "#00bcd4" : "white");
-                    el.setAttribute("stroke-width", isSelected ? "3" : "2");
-                    this.addClickListener(el, tool);
-                    drawLayer.appendChild(el);
-                    if (isSelected) {
-                        this.addHandle(x1, y1, tool, 'p1');
-                        this.addHandle(x2, y2, tool, 'p2');
-                        this.addDeleteButton(Math.max(x1, x2) + 10, Math.min(y1, y2) - 10, tool);
-                    }
-                } else if (tool.type === 'rectangle') {
-                    const x1 = chart.timeScale().timeToCoordinate(tool.p1.time);
-                    const y1 = candleSeries.priceToCoordinate(tool.p1.price);
-                    const x2 = chart.timeScale().timeToCoordinate(tool.p2.time);
-                    const y2 = candleSeries.priceToCoordinate(tool.p2.price);
-                    if (x1 === null || x2 === null || y1 === null || y2 === null) return;
-                    const el = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-                    el.setAttribute("x", Math.min(x1, x2)); el.setAttribute("y", Math.min(y1, y2));
-                    el.setAttribute("width", Math.abs(x2 - x1)); el.setAttribute("height", Math.abs(y2 - y1));
-                    el.setAttribute("fill", isSelected ? "rgba(0,188,212,0.15)" : "rgba(255,255,255,0.08)");
-                    el.setAttribute("stroke", isSelected ? "#00bcd4" : "white");
-                    el.setAttribute("stroke-width", isSelected ? "2" : "1");
-                    this.addClickListener(el, tool);
-                    drawLayer.appendChild(el);
-                    if (isSelected) {
-                        this.addHandle(Math.min(x1,x2), Math.min(y1,y2), tool, 'p1');
-                        this.addHandle(Math.max(x1,x2), Math.max(y1,y2), tool, 'p2');
-                        this.addDeleteButton(Math.max(x1, x2) + 10, Math.min(y1, y2) - 10, tool);
-                    }
-                } else if (tool.type === 'fibonacci') {
-                    const x1 = chart.timeScale().timeToCoordinate(tool.p1.time);
-                    const y1 = candleSeries.priceToCoordinate(tool.p1.price);
-                    const x2 = chart.timeScale().timeToCoordinate(tool.p2.time);
-                    const y2 = candleSeries.priceToCoordinate(tool.p2.price);
-                    if (x1 === null || x2 === null || y1 === null || y2 === null) return;
-                    const range = Math.abs(y1 - y2);
-                    const minY = Math.min(y1, y2);
-                    const levels = [
-                        { val: 0, label: '0%' }, { val: 0.236, label: '23.6%' },
-                        { val: 0.382, label: '38.2%' }, { val: 0.5, label: '50%' },
-                        { val: 0.618, label: '61.8%' }, { val: 0.786, label: '78.6%' },
-                        { val: 1, label: '100%' }
-                    ];
-                    const container = document.createElementNS("http://www.w3.org/2000/svg", "g");
-                    this.addClickListener(container, tool);
-                    levels.forEach(level => {
-                        const y = minY + (range * level.val);
-                        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-                        line.setAttribute("x1", Math.min(x1, x2)); line.setAttribute("y1", y);
-                        line.setAttribute("x2", Math.max(x1, x2)); line.setAttribute("y2", y);
-                        line.setAttribute("stroke", isSelected ? "#00bcd4" : "yellow");
-                        line.setAttribute("stroke-width", "1"); line.setAttribute("stroke-dasharray", "4");
-                        container.appendChild(line);
-                        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
-                        text.setAttribute("x", Math.min(x1, x2) + 5); text.setAttribute("y", y - 4);
-                        text.setAttribute("fill", isSelected ? "#00bcd4" : "yellow");
-                        text.setAttribute("font-size", "11"); text.textContent = level.label;
-                        container.appendChild(text);
-                    });
-                    drawLayer.appendChild(container);
-                    if (isSelected) {
-                        this.addHandle(x1, y1, tool, 'p1');
-                        this.addHandle(x2, y2, tool, 'p2');
-                        this.addDeleteButton(Math.max(x1, x2) + 10, Math.min(y1, y2) - 10, tool);
-                    }
-                } else if (tool.type === 'long' || tool.type === 'short') {
-                    const x1 = chart.timeScale().timeToCoordinate(tool.p1.time);
-                    const y1 = candleSeries.priceToCoordinate(tool.p1.price);
-                    const y2 = candleSeries.priceToCoordinate(tool.p2.price);
-                    if (x1 === null || y1 === null || y2 === null) return;
-                    const risk = Math.abs(y1 - y2);
-                    const container = document.createElementNS("http://www.w3.org/2000/svg", "g");
-                    this.addClickListener(container, tool);
-                    const riskRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-                    riskRect.setAttribute("x", x1); riskRect.setAttribute("y", Math.min(y1, y2));
-                    riskRect.setAttribute("width", 60); riskRect.setAttribute("height", risk);
-                    riskRect.setAttribute("fill", "rgba(255,0,0,0.2)"); riskRect.setAttribute("stroke", "red"); riskRect.setAttribute("stroke-width", "1");
-                    container.appendChild(riskRect);
-                    const rewardRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
-                    if (tool.type === 'long') {
-                        rewardRect.setAttribute("x", x1); rewardRect.setAttribute("y", y1 - risk * 3);
-                        rewardRect.setAttribute("width", 60); rewardRect.setAttribute("height", risk * 3);
-                    } else {
-                        rewardRect.setAttribute("x", x1); rewardRect.setAttribute("y", Math.min(y1, y2) + risk);
-                        rewardRect.setAttribute("width", 60); rewardRect.setAttribute("height", risk * 3);
-                    }
-                    rewardRect.setAttribute("fill", "rgba(0,255,0,0.2)"); rewardRect.setAttribute("stroke", "green"); rewardRect.setAttribute("stroke-width", "1");
-                    container.appendChild(rewardRect);
-                    const entryLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
-                    entryLabel.setAttribute("x", x1 + 65); entryLabel.setAttribute("y", y1 + 4);
-                    entryLabel.setAttribute("fill", "white"); entryLabel.setAttribute("font-size", "11");
-                    entryLabel.textContent = `Entry: ${tool.p1.price.toFixed(2)}`;
-                    container.appendChild(entryLabel);
-                    drawLayer.appendChild(container);
-                    if (isSelected) {
-                        this.addHandle(x1, y1, tool, 'p1');
-                        this.addHandle(x1, y2, tool, 'p2');
-                        this.addDeleteButton(x1 + 70, Math.min(y1, y2) - 10, tool);
-                    }
-                }
-            }
-
-            onMouseDown(e) {
-                if (this.isDraggingHandle) return;
-                const rect = chartContainer.getBoundingClientRect();
-                const x = e.clientX - rect.left;
-                const y = e.clientY - rect.top;
-                
-                if (this.tool && x >= 0 && y >= 0 && x <= rect.width && y <= rect.height) {
-                    this.isDrawing = true;
-                    chart.applyOptions({ handleScroll: false, handleScale: false });
-                    const time = pixelToTime(x);
-                    const price = candleSeries.coordinateToPrice(y);
-                    this.currentElement = { type: this.tool, p1: { time, price }, p2: { time, price } };
-                }
-            }
-            
-            onMouseMove(e) {
-                const rect = chartContainer.getBoundingClientRect();
-                const x = e.clientX - rect.left;
-                const y = e.clientY - rect.top;
-                
-                if (this.isDraggingHandle && this.selectedTool) {
-                    chart.applyOptions({ handleScroll: false, handleScale: false });
-                    const time = pixelToTime(x);
-                    const price = candleSeries.coordinateToPrice(y);
-                    if (this.dragHandlePoint === 'p1') {
-                        this.selectedTool.p1 = { time, price };
-                    } else {
-                        this.selectedTool.p2 = { time, price };
-                    }
-                    this.renderAll();
-                    return;
-                }
-                
-                if (!this.isDrawing || !this.currentElement) return;
-                this.currentElement.p2.time = pixelToTime(x);
-                this.currentElement.p2.price = candleSeries.coordinateToPrice(y);
-                this.renderAll();
-            }
-            
-            onMouseUp(e) {
-                chart.applyOptions({ handleScroll: true, handleScale: true });
-                if (this.isDraggingHandle) {
-                    this.isDraggingHandle = false;
-                    this.dragHandlePoint = null;
-                    return;
-                }
-                if (this.currentElement) { 
-                    this.drawnTools.push(this.currentElement); 
-                }
-                this.isDrawing = false; 
-                this.currentElement = null; 
-                this.tool = null;
-                if (!this.isClickingTool) {
-                    this.selectedTool = null;
-                }
-                this.isClickingTool = false;
-                this.renderAll();
-            }
+        function extendTimeAxis() {
+            if (!currentCandle || rawHistory.length === 0) return;
+            const lastTime = rawHistory[rawHistory.length - 1].time;
+            const lastPrice = rawHistory[rawHistory.length - 1].close;
+            const phantomData = [];
+            for (let i = 1; i <= 150; i++) phantomData.push({ time: lastTime + (timeframeSeconds * i), value: lastPrice });
+            phantomSeries.setData(phantomData);
         }
-        const drawingManager = new DrawingManager();
 
-        let socket = null;
-        let timeframeSeconds = 60;
-        let rawHistory = [];
-        let isHistoryLoaded = false;
-        let tickBuffer = [];
-        let currentCandle = null;
-        let isDark = true;
+        function aggregateCandles(data, tf) {
+            const aggregated = []; let cur = null;
+            data.forEach(c => {
+                const time = Math.floor(c.time / tf) * tf;
+                if (!cur || time > cur.time) { if (cur) aggregated.push(cur); cur = { ...c, time }; }
+                else { cur.high = Math.max(cur.high, c.high); cur.low = Math.min(cur.low, c.low); cur.close = c.close; }
+            });
+            if (cur) aggregated.push(cur);
+            return aggregated;
+        }
 
         function updateColors() {
             candleSeries.applyOptions({
@@ -396,36 +128,127 @@
             });
         }
 
-        function aggregateCandles(data, tf) {
-            const aggregated = [];
-            let currentCandle = null;
-            data.forEach(candle => {
-                const time = Math.floor(candle.time / tf) * tf;
-                if (!currentCandle || time > currentCandle.time) {
-                    if (currentCandle) aggregated.push(currentCandle);
-                    currentCandle = { ...candle, time: time };
-                } else {
-                    currentCandle.high = Math.max(currentCandle.high, candle.high);
-                    currentCandle.low = Math.min(currentCandle.low, candle.low);
-                    currentCandle.close = candle.close;
-                }
-            });
-            if (currentCandle) aggregated.push(currentCandle);
-            return aggregated;
+        // --- Chart Data ---
+        function applyMarkers() {
+            if (typeof candleSeries.setMarkers === 'function') {
+                candleSeries.setMarkers(signalMarkers);
+            }
         }
 
         function setTF(tf) {
             timeframeSeconds = tf;
+            signalMarkers = [];
+            applyMarkers();
             const aggregatedData = aggregateCandles(rawHistory, tf);
             candleSeries.setData(aggregatedData);
             extendTimeAxis();
+            if (currentStrategy) runBacktest();
+        }
+
+        // --- Live Stats ---
+        function updateLiveStats() {
+            if (!currentStrategy || signalMarkers.length === 0) return;
+            const capital = 100000;
+            let trades = 0;
+            let wins = 0;
+            let totalPnl = 0;
+            let entryPrice = null;
+            
+            // Walk through all signals to compute stats
+            for (const marker of signalMarkers) {
+                const candle = rawHistory.find(c => c.time === marker.time);
+                if (!candle) continue;
+                const price = candle.close;
+                
+                if (marker.text === 'Buy') {
+                    entryPrice = price;
+                } else if (marker.text === 'Sell' && entryPrice !== null) {
+                    const pnl = price - entryPrice;
+                    totalPnl += pnl;
+                    if (pnl > 0) wins++;
+                    trades++;
+                    entryPrice = null;
+                }
+            }
+            
+            const currentPrice = rawHistory.length > 0 ? rawHistory[rawHistory.length - 1].close : 0;
+            let unrealizedPnl = 0;
+            let position = 'Flat';
+            if (entryPrice !== null) {
+                unrealizedPnl = currentPrice - entryPrice;
+                position = 'Long';
+            }
+            
+            const totalPnlPct = capital > 0 ? ((totalPnl + unrealizedPnl) / capital) * 100 : 0;
+            const winRate = trades > 0 ? ((wins / trades) * 100).toFixed(1) : '0.0';
+            const pnlClass = (totalPnl + unrealizedPnl) >= 0 ? 'pos' : 'neg';
+            
+            document.getElementById('results').innerHTML = `
+                <div class="title" style="display:flex;justify-content:space-between;align-items:center">
+                    <span>${currentSymbol.toUpperCase()} | ${currentStrategy.replace('_',' ')}</span>
+                    <span style="cursor:pointer;color:#ef5350;font-size:16px" onclick="clearResults()">x</span>
+                </div>
+                <div class="row"><span>Position</span><span>${position}</span></div>
+                <div class="row"><span>Trades</span><span>${trades}</span></div>
+                <div class="row"><span>Win Rate</span><span>${winRate}%</span></div>
+                <div class="row"><span>Realized P&L</span><span class="${totalPnl >= 0 ? 'pos' : 'neg'}">${totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(2)}</span></div>
+                <div class="row"><span>Unrealized</span><span class="${unrealizedPnl >= 0 ? 'pos' : 'neg'}">${unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toFixed(2)}</span></div>
+            `;
+            document.getElementById('results').style.display = 'block';
+        }
+
+        // --- Live Signal Detection ---
+        function computeEMA(data, period) {
+            const k = 2 / (period + 1);
+            const ema = [];
+            let prev = data[0];
+            for (let i = 0; i < data.length; i++) {
+                const val = (data[i] * k) + (prev * (1 - k));
+                ema.push(val);
+                prev = val;
+            }
+            return ema;
+        }
+
+        function detectLiveSignal() {
+            if (!currentStrategy || rawHistory.length < 15) return;
+            const closes = rawHistory.map(c => c.close);
+            const fastEMA = computeEMA(closes, 9);
+            const slowEMA = computeEMA(closes, 15);
+            const len = fastEMA.length;
+            if (len < 2) return;
+            
+            const prevFast = fastEMA[len - 2];
+            const prevSlow = slowEMA[len - 2];
+            const currFast = fastEMA[len - 1];
+            const currSlow = slowEMA[len - 1];
+            
+            let newSignal = 0;
+            if (currFast > currSlow && prevFast <= prevSlow) newSignal = 1;
+            else if (currFast < currSlow && prevFast >= prevSlow) newSignal = -1;
+            
+            if (newSignal !== 0) {
+                const lastCandle = rawHistory[rawHistory.length - 1];
+                const marker = {
+                    time: lastCandle.time,
+                    position: newSignal === 1 ? 'belowBar' : 'aboveBar',
+                    color: newSignal === 1 ? '#26a69a' : '#ef5350',
+                    shape: newSignal === 1 ? 'arrowUp' : 'arrowDown',
+                    text: newSignal === 1 ? 'Buy' : 'Sell'
+                };
+                signalMarkers.push(marker);
+                applyMarkers();
+                updateLiveStats();
+            }
         }
 
         function processTick(data) {
             const price = parseFloat(data.price);
             const time = Math.floor(data.time / timeframeSeconds) * timeframeSeconds;
             if (!currentCandle || time > currentCandle.time) {
-                currentCandle = { time: time, open: price, high: price, low: price, close: price };
+                // New candle started - detect signal on previous candle
+                if (currentCandle && currentStrategy) detectLiveSignal();
+                currentCandle = { time, open: price, high: price, low: price, close: price };
                 candleSeries.update(currentCandle);
                 rawHistory.push(currentCandle);
                 extendTimeAxis();
@@ -440,27 +263,228 @@
 
         function connect(symbol) {
             if (socket) socket.close();
-            isHistoryLoaded = false; tickBuffer = []; currentCandle = null; rawHistory = [];
+            isHistoryLoaded = false; tickBuffer = []; currentCandle = null; rawHistory = []; signalMarkers = [];
+            currentSymbol = symbol.toLowerCase();
             chart.removeSeries(candleSeries);
             chart.removeSeries(phantomSeries);
-            candleSeries = chart.addSeries(LightweightCharts.CandlestickSeries, {
+            candleSeries = chart.addCandlestickSeries({
                 upColor: document.getElementById('upColor').value, downColor: document.getElementById('downColor').value,
-                wickUpColor: document.getElementById('upColor').value, wickDownColor: document.getElementById('downColor').value,
-                borderVisible: false,
+                wickUpColor: document.getElementById('upColor').value, wickDownColor: document.getElementById('downColor').value, borderVisible: false,
             });
-            phantomSeries = chart.addSeries(LightweightCharts.LineSeries, {
+            phantomSeries = chart.addLineSeries({
                 color: 'transparent', lineWidth: 1, visible: true, priceLineVisible: false, lastValueVisible: false,
             });
-            socket = new WebSocket(`ws://localhost:8001/ws/market-data/${symbol.toLowerCase()}`);
+            socket = new WebSocket(`ws://localhost:8001/ws/market-data/${currentSymbol}`);
             socket.onmessage = (event) => {
                 const data = JSON.parse(event.data);
-                if (data.type === 'history') { rawHistory = data.data; setTF(timeframeSeconds); isHistoryLoaded = true; currentCandle = rawHistory[rawHistory.length - 1]; tickBuffer.forEach(tick => processTick(tick)); tickBuffer = [];
+                if (data.type === 'history') { rawHistory = data.data; setTF(timeframeSeconds); isHistoryLoaded = true; currentCandle = rawHistory[rawHistory.length - 1]; tickBuffer.forEach(t => processTick(t)); tickBuffer = []; if (currentStrategy) runBacktest();
                 } else if (data.type === 'tick') { if (!isHistoryLoaded) tickBuffer.push(data); else processTick(data); }
             };
         }
 
         function switchSymbol() { connect(document.getElementById('symbolInput').value); }
+
+        // --- Strategy ---
+        async function loadStrategies() {
+            try {
+                const res = await fetch('/api/strategies');
+                const strategies = await res.json();
+                const select = document.getElementById('strategySelect');
+                for (const [key, val] of Object.entries(strategies)) {
+                    const opt = document.createElement('option');
+                    opt.value = key; opt.textContent = val.name;
+                    select.appendChild(opt);
+                }
+            } catch (e) { console.error('Failed to load strategies:', e); }
+        }
+
+        function onStrategyChange() {
+            currentStrategy = document.getElementById('strategySelect').value;
+            if (currentStrategy && isHistoryLoaded) runBacktest();
+            else if (!currentStrategy) clearResults();
+        }
+
+        function clearResults() {
+            signalMarkers = [];
+            applyMarkers();
+            document.getElementById('results').style.display = 'none';
+            currentStrategy = '';
+            document.getElementById('strategySelect').value = '';
+        }
+
+        async function runBacktest() {
+            if (!currentStrategy || !isHistoryLoaded) return;
+            const yfSymbol = currentSymbol.toUpperCase().replace('USDT', '-USD');
+            const tfMap = { 60: '1m', 300: '5m', 900: '15m', 3600: '1h', 14400: '1h', 86400: '1d' };
+            const interval = tfMap[timeframeSeconds] || '5m';
+            try {
+                const res = await fetch('/api/backtest', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ strategy: currentStrategy, params: { fast_window: 9, slow_window: 15 }, symbol: yfSymbol, period: '1mo', interval, capital: 100000 })
+                });
+                const result = await res.json();
+                if (result.error) return;
+                const m = result.metrics;
+                const pnlClass = m.pnl >= 0 ? 'pos' : 'neg';
+                document.getElementById('results').innerHTML = `
+                    <div class="title" style="display:flex;justify-content:space-between;align-items:center">
+                        <span>${currentSymbol.toUpperCase()} | ${currentStrategy.replace('_',' ')}</span>
+                        <span style="cursor:pointer;color:#ef5350;font-size:16px" onclick="clearResults()">x</span>
+                    </div>
+                    <div class="row"><span>P&L</span><span class="${pnlClass}">${m.pnl >= 0 ? '+' : ''}${m.pnl.toLocaleString()} (${m.pnl_pct.toFixed(2)}%)</span></div>
+                    <div class="row"><span>Sharpe</span><span>${m.sharpe_ratio}</span></div>
+                    <div class="row"><span>Max DD</span><span class="neg">${(m.max_drawdown * 100).toFixed(2)}%</span></div>
+                    <div class="row"><span>Trades</span><span>${m.total_trades}</span></div>
+                `;
+                document.getElementById('results').style.display = 'block';
+                signalMarkers = result.signals.map(s => ({
+                    time: s.time, position: s.signal === 1 ? 'belowBar' : 'aboveBar',
+                    color: s.signal === 1 ? '#26a69a' : '#ef5350',
+                    shape: s.signal === 1 ? 'arrowUp' : 'arrowDown',
+                    text: s.signal === 1 ? 'Buy' : 'Sell'
+                }));
+                applyMarkers();
+            } catch (e) { console.error('Backtest error:', e); }
+        }
+
+        // --- Drawing Manager ---
+        const drawLayer = document.getElementById('draw-layer');
+        class DrawingManager {
+            constructor() {
+                this.tool = null; this.isDrawing = false; this.currentElement = null;
+                this.drawnTools = []; this.selectedTool = null; this.isDraggingHandle = false;
+                this.dragHandlePoint = null; this.isClickingTool = false;
+                document.addEventListener('mousedown', e => this.onMouseDown(e));
+                document.addEventListener('mousemove', e => this.onMouseMove(e));
+                document.addEventListener('mouseup', e => this.onMouseUp(e));
+                document.addEventListener('keydown', e => this.onKeyDown(e));
+                chart.timeScale().subscribeVisibleLogicalRangeChange(() => this.renderAll());
+            }
+            setTool(tool) { this.tool = tool; this.selectedTool = null; this.renderAll(); }
+            clear() { this.drawnTools = []; this.selectedTool = null; this.renderAll(); }
+            onKeyDown(e) {
+                if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+                if (e.key === 'Delete' && this.selectedTool !== null) { const idx = this.drawnTools.indexOf(this.selectedTool); if (idx > -1) { this.drawnTools.splice(idx, 1); this.selectedTool = null; this.renderAll(); } }
+                if (e.key === 'Escape') { this.tool = null; this.selectedTool = null; this.renderAll(); }
+            }
+            renderAll() { drawLayer.innerHTML = ''; this.drawnTools.forEach(t => this.renderTool(t)); if (this.currentElement) this.renderTool(this.currentElement); }
+            addHandle(x, y, tool, point) {
+                const c = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", "6");
+                c.setAttribute("fill", "#00bcd4"); c.setAttribute("stroke", "white"); c.setAttribute("stroke-width", "1.5");
+                c.style.cursor = "nwse-resize"; c.style.pointerEvents = "auto";
+                c.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); this.isDraggingHandle = true; this.dragHandlePoint = point; this.selectedTool = tool; });
+                drawLayer.appendChild(c);
+            }
+            addDeleteButton(x, y, tool) {
+                const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                g.style.cursor = "pointer"; g.style.pointerEvents = "auto";
+                const bg = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+                bg.setAttribute("cx", x); bg.setAttribute("cy", y); bg.setAttribute("r", "8"); bg.setAttribute("fill", "#ef5350");
+                g.appendChild(bg);
+                [[-4,-4,4,4],[4,-4,-4,4]].forEach(([x1,y1,x2,y2]) => {
+                    const l = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                    l.setAttribute("x1", x+x1); l.setAttribute("y1", y+y1); l.setAttribute("x2", x+x2); l.setAttribute("y2", y+y2);
+                    l.setAttribute("stroke", "white"); l.setAttribute("stroke-width", "2");
+                    g.appendChild(l);
+                });
+                g.addEventListener('mousedown', e => { e.stopPropagation(); e.preventDefault(); const idx = this.drawnTools.indexOf(tool); if (idx > -1) this.drawnTools.splice(idx, 1); this.selectedTool = null; this.renderAll(); });
+                drawLayer.appendChild(g);
+            }
+            addClickListener(el, tool) {
+                el.style.pointerEvents = "auto"; el.style.cursor = "pointer";
+                el.addEventListener('mousedown', e => { if (!this.tool && !this.isDraggingHandle) { e.stopPropagation(); this.isClickingTool = true; this.selectedTool = tool; this.renderAll(); } });
+            }
+            renderTool(tool) {
+                const sel = tool === this.selectedTool;
+                const x1 = chart.timeScale().timeToCoordinate(tool.p1.time);
+                const y1 = candleSeries.priceToCoordinate(tool.p1.price);
+                const x2 = chart.timeScale().timeToCoordinate(tool.p2.time);
+                const y2 = candleSeries.priceToCoordinate(tool.p2.price);
+                if (x1 === null || y1 === null) return;
+                if (tool.type === 'trendline' && x2 !== null && y2 !== null) {
+                    const el = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                    el.setAttribute("x1", x1); el.setAttribute("y1", y1); el.setAttribute("x2", x2); el.setAttribute("y2", y2);
+                    el.setAttribute("stroke", sel ? "#00bcd4" : "white"); el.setAttribute("stroke-width", sel ? "3" : "2");
+                    this.addClickListener(el, tool); drawLayer.appendChild(el);
+                    if (sel) { this.addHandle(x1, y1, tool, 'p1'); this.addHandle(x2, y2, tool, 'p2'); this.addDeleteButton(Math.max(x1,x2)+10, Math.min(y1,y2)-10, tool); }
+                } else if (tool.type === 'rectangle' && x2 !== null && y2 !== null) {
+                    const el = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+                    el.setAttribute("x", Math.min(x1,x2)); el.setAttribute("y", Math.min(y1,y2));
+                    el.setAttribute("width", Math.abs(x2-x1)); el.setAttribute("height", Math.abs(y2-y1));
+                    el.setAttribute("fill", sel ? "rgba(0,188,212,0.15)" : "rgba(255,255,255,0.08)");
+                    el.setAttribute("stroke", sel ? "#00bcd4" : "white"); el.setAttribute("stroke-width", sel ? "2" : "1");
+                    this.addClickListener(el, tool); drawLayer.appendChild(el);
+                    if (sel) { this.addHandle(Math.min(x1,x2), Math.min(y1,y2), tool, 'p1'); this.addHandle(Math.max(x1,x2), Math.max(y1,y2), tool, 'p2'); this.addDeleteButton(Math.max(x1,x2)+10, Math.min(y1,y2)-10, tool); }
+                } else if (tool.type === 'fibonacci' && x2 !== null && y2 !== null) {
+                    const range = Math.abs(y1-y2); const minY = Math.min(y1,y2);
+                    const levels = [{v:0,l:'0%'},{v:0.236,l:'23.6%'},{v:0.382,l:'38.2%'},{v:0.5,l:'50%'},{v:0.618,l:'61.8%'},{v:0.786,l:'78.6%'},{v:1,l:'100%'}];
+                    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                    this.addClickListener(g, tool);
+                    levels.forEach(level => {
+                        const y = minY + (range * level.v);
+                        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+                        line.setAttribute("x1", Math.min(x1,x2)); line.setAttribute("y1", y); line.setAttribute("x2", Math.max(x1,x2)); line.setAttribute("y2", y);
+                        line.setAttribute("stroke", sel ? "#00bcd4" : "yellow"); line.setAttribute("stroke-width", "1"); line.setAttribute("stroke-dasharray", "4");
+                        g.appendChild(line);
+                        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                        text.setAttribute("x", Math.min(x1,x2)+5); text.setAttribute("y", y-4); text.setAttribute("fill", sel ? "#00bcd4" : "yellow"); text.setAttribute("font-size", "11"); text.textContent = level.l;
+                        g.appendChild(text);
+                    });
+                    drawLayer.appendChild(g);
+                    if (sel) { this.addHandle(x1, y1, tool, 'p1'); this.addHandle(x2, y2, tool, 'p2'); this.addDeleteButton(Math.max(x1,x2)+10, Math.min(y1,y2)-10, tool); }
+                } else if ((tool.type === 'long' || tool.type === 'short') && y2 !== null) {
+                    const risk = Math.abs(y1-y2); const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                    this.addClickListener(g, tool);
+                    const rr = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+                    rr.setAttribute("x", x1); rr.setAttribute("y", Math.min(y1,y2)); rr.setAttribute("width", 60); rr.setAttribute("height", risk);
+                    rr.setAttribute("fill", "rgba(255,0,0,0.2)"); rr.setAttribute("stroke", "red"); rr.setAttribute("stroke-width", "1"); g.appendChild(rr);
+                    const rw = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+                    if (tool.type === 'long') { rw.setAttribute("x", x1); rw.setAttribute("y", y1-risk*3); rw.setAttribute("width", 60); rw.setAttribute("height", risk*3); }
+                    else { rw.setAttribute("x", x1); rw.setAttribute("y", Math.min(y1,y2)+risk); rw.setAttribute("width", 60); rw.setAttribute("height", risk*3); }
+                    rw.setAttribute("fill", "rgba(0,255,0,0.2)"); rw.setAttribute("stroke", "green"); rw.setAttribute("stroke-width", "1"); g.appendChild(rw);
+                    const lbl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                    lbl.setAttribute("x", x1+65); lbl.setAttribute("y", y1+4); lbl.setAttribute("fill", "white"); lbl.setAttribute("font-size", "11"); lbl.textContent = `Entry: ${tool.p1.price.toFixed(2)}`; g.appendChild(lbl);
+                    drawLayer.appendChild(g);
+                    if (sel) { this.addHandle(x1, y1, tool, 'p1'); this.addHandle(x1, y2, tool, 'p2'); this.addDeleteButton(x1+70, Math.min(y1,y2)-10, tool); }
+                }
+            }
+            onMouseDown(e) {
+                if (this.isDraggingHandle) return;
+                const rect = chartContainer.getBoundingClientRect();
+                const x = e.clientX - rect.left; const y = e.clientY - rect.top;
+                if (this.tool && x >= 0 && y >= 0 && x <= rect.width && y <= rect.height) {
+                    this.isDrawing = true; chart.applyOptions({ handleScroll: false, handleScale: false });
+                    this.currentElement = { type: this.tool, p1: { time: pixelToTime(x), price: candleSeries.coordinateToPrice(y) }, p2: { time: pixelToTime(x), price: candleSeries.coordinateToPrice(y) } };
+                }
+            }
+            onMouseMove(e) {
+                const rect = chartContainer.getBoundingClientRect();
+                const x = e.clientX - rect.left; const y = e.clientY - rect.top;
+                if (this.isDraggingHandle && this.selectedTool) {
+                    chart.applyOptions({ handleScroll: false, handleScale: false });
+                    const p = this.dragHandlePoint === 'p1' ? 'p1' : 'p2';
+                    this.selectedTool[p] = { time: pixelToTime(x), price: candleSeries.coordinateToPrice(y) };
+                    this.renderAll(); return;
+                }
+                if (!this.isDrawing || !this.currentElement) return;
+                this.currentElement.p2 = { time: pixelToTime(x), price: candleSeries.coordinateToPrice(y) };
+                this.renderAll();
+            }
+            onMouseUp(e) {
+                chart.applyOptions({ handleScroll: true, handleScale: true });
+                if (this.isDraggingHandle) { this.isDraggingHandle = false; this.dragHandlePoint = null; return; }
+                if (this.currentElement) this.drawnTools.push(this.currentElement);
+                this.isDrawing = false; this.currentElement = null; this.tool = null;
+                if (!this.isClickingTool) this.selectedTool = null;
+                this.isClickingTool = false; this.renderAll();
+            }
+        }
+        const drawingManager = new DrawingManager();
+
+        // --- Init ---
         window.addEventListener('resize', () => { chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight }); });
+        loadStrategies();
         connect('btcusdt');
     </script>
 </body>

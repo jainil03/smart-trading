@@ -16,6 +16,11 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 
 from src.connectors.binance_connector import BinanceConnector
+from src.strategies.moving_average import MovingAverageStrategy
+from src.engine.execution import ExecutionEngine
+from src.engine.portfolio import Portfolio
+from src.engine.engine import BacktestEngine
+from src.analytics.metrics import sharpe_ratio, max_drawdown
 
 app = FastAPI()
 
@@ -25,8 +30,90 @@ app.mount("/static", StaticFiles(directory="algotrading/app/static"), name="stat
 @app.get("/")
 async def get_index():
     path = os.path.join(os.path.dirname(__file__), "static/index.html")
-    # Force no-cache so browser always gets latest UI
     return FileResponse(path, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+
+# --- Strategy Registry ---
+STRATEGIES = {
+    "moving_average": {
+        "name": "Moving Average Crossover",
+        "params": {
+            "fast_window": {"label": "Fast Window", "default": 9, "min": 2, "max": 50},
+            "slow_window": {"label": "Slow Window", "default": 15, "min": 5, "max": 200}
+        }
+    }
+}
+
+def get_strategy(name, params):
+    if name == "moving_average":
+        return MovingAverageStrategy(params.get("fast_window", 9), params.get("slow_window", 15))
+    return None
+
+@app.get("/api/strategies")
+async def list_strategies():
+    return STRATEGIES
+
+@app.post("/api/backtest")
+async def run_backtest(request: dict):
+    strategy_name = request.get("strategy", "moving_average")
+    params = request.get("params", {})
+    symbol = request.get("symbol", "BTC-USD")
+    period = request.get("period", "1mo")
+    interval = request.get("interval", "5m")
+    capital = request.get("capital", 100000)
+    
+    try:
+        # Fetch historical data
+        data = yf.Ticker(symbol).history(period=period, interval=interval)
+        if data.empty:
+            return {"error": "No data found"}
+        
+        # Run strategy
+        strategy = get_strategy(strategy_name, params)
+        if not strategy:
+            return {"error": "Strategy not found"}
+        
+        data = strategy.generate_signals(data)
+        
+        # Backtest
+        execution = ExecutionEngine(0.001)
+        portfolio = Portfolio(capital)
+        engine = BacktestEngine(execution, portfolio)
+        results = engine.run(data)
+        
+        # Metrics
+        sr = sharpe_ratio(results["strategy_returns"])
+        dd = max_drawdown(results["equity"])
+        final_capital = float(results["equity"].iloc[-1])
+        pnl = final_capital - capital
+        pnl_pct = (pnl / capital) * 100
+        total_trades = int(results["position"].diff().abs().sum() / 2)
+        
+        # Get signals for chart
+        signals = data.loc[data["signal"] != 0].copy()
+        signal_list = [
+            {
+                "time": int(idx.timestamp()),
+                "price": float(row["Close"]),
+                "signal": int(row["signal"])
+            }
+            for idx, row in signals.iterrows()
+        ]
+        
+        return {
+            "metrics": {
+                "initial_capital": capital,
+                "final_capital": round(final_capital, 2),
+                "pnl": round(pnl, 2),
+                "pnl_pct": round(pnl_pct, 2),
+                "sharpe_ratio": round(sr, 2),
+                "max_drawdown": round(dd, 4),
+                "total_trades": total_trades
+            },
+            "signals": signal_list
+        }
+    except Exception as e:
+        logger.error(f"Backtest error: {e}")
+        return {"error": str(e)}
 
 class ConnectionManager:
     def __init__(self):
